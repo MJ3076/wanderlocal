@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WanderLocal</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: #f5f5f5; }
+    header { background: #0f6e56; color: white; padding: 12px 20px; }
+    header h1 { margin: 0; font-size: 22px; }
+    header span { font-size: 13px; opacity: 0.9; }
+    main { display: flex; height: calc(100vh - 62px); }
+    #left { width: 380px; overflow-y: auto; padding: 12px; background: white; }
+    #map { flex: 1; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: pointer; }
+    .card:hover { background: #eef7f3; }
+    .tag { font-size: 11px; background: #e1f5ee; color: #085041; padding: 2px 8px; border-radius: 10px; }
+    h3 { margin: 14px 0 6px; font-size: 16px; }
+    select, input, textarea, button { width: 100%; padding: 8px; margin-top: 6px; font-size: 14px; }
+    button { background: #0f6e56; color: white; border: none; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #085041; }
+    .review { border-top: 1px solid #eee; padding: 6px 0; font-size: 14px; }
+    .box { background: #faeeda; border-radius: 8px; padding: 10px; margin-top: 8px; font-size: 14px; }
+    @media (max-width: 700px) { main { flex-direction: column-reverse; } #left { width: 100%; } #map { height: 300px; flex: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WanderLocal</h1>
+    <span>Best places, local food and fair fares</span>
+  </header>
+
+  <main>
+    <section id="left">
+      <select id="typeFilter">
+        <option value="">All places</option>
+        <option value="sightseeing">Sightseeing</option>
+        <option value="restaurant">Restaurants</option>
+        <option value="street_food">Street food</option>
+      </select>
+
+      <div id="list" style="margin-top: 10px"></div>
+      <div id="details"></div>
+
+      <h3>Fare estimator</h3>
+      <select id="fromSel"></select>
+      <select id="toSel"></select>
+      <select id="transportSel"></select>
+      <button id="estimateBtn">Estimate fare</button>
+      <div id="fareResult"></div>
+
+      <h3>Report a fare you paid</h3>
+      <input id="paidAmount" type="number" placeholder="Amount paid in rupees" />
+      <button id="reportBtn">Submit fare report</button>
+      <div id="reportMsg" style="font-size: 13px; margin-top: 6px"></div>
+    </section>
+
+    <div id="map"></div>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const typeLabel = { sightseeing: 'Sightseeing', restaurant: 'Restaurant', street_food: 'Street food' };
+
+    const map = L.map('map').setView([26.9124, 75.7873], 12);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+
+    let markers = [];
+
+    async function loadPlaces() {
+      const type = $('typeFilter').value;
+      const res = await fetch('/api/places' + (type ? '?type=' + type : ''));
+      const places = await res.json();
+
+      markers.forEach((m) => map.removeLayer(m));
+      markers = [];
+      $('list').innerHTML = '';
+
+      places.forEach((p) => {
+        const rating = p.avg_rating ? p.avg_rating + ' / 5 (' + p.review_count + ')' : 'No reviews yet';
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = '<b>' + esc(p.name) + '</b> <span class="tag">' + typeLabel[p.place_type] + '</span><br>' +
+          '<small>' + esc(p.description) + '</small><br><small>Rating: ' + rating + '</small>';
+        card.onclick = () => { map.setView([p.latitude, p.longitude], 14); showDetails(p); };
+        $('list').appendChild(card);
+
+        const marker = L.marker([p.latitude, p.longitude]).addTo(map).bindPopup('<b>' + esc(p.name) + '</b><br>' + rating);
+        marker.on('click', () => showDetails(p));
+        markers.push(marker);
+      });
+    }
+
+    async function showDetails(p) {
+      const res = await fetch('/api/places/' + p.place_id + '/reviews');
+      const reviews = await res.json();
+      let html = '<h3>Reviews: ' + esc(p.name) + '</h3>';
+      html += reviews.length
+        ? reviews.map((r) => '<div class="review"><b>' + esc(r.name) + '</b> - ' + r.rating + '/5<br>' + esc(r.comment) + '</div>').join('')
+        : '<div class="review">No reviews yet.</div>';
+      html += '<select id="ratingSel"><option value="5">5 - Excellent</option><option value="4">4 - Good</option><option value="3">3 - Okay</option><option value="2">2 - Poor</option><option value="1">1 - Bad</option></select>' +
+        '<textarea id="commentBox" placeholder="Write your review"></textarea>' +
+        '<button id="postReview">Post review</button>';
+      $('details').innerHTML = html;
+      $('postReview').onclick = async () => {
+        await fetch('/api/reviews', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ place_id: p.place_id, rating: Number($('ratingSel').value), comment: $('commentBox').value }),
+        });
+        await loadPlaces();
+        showDetails(p);
+      };
+    }
+
+    async function setupFareForm() {
+      const places = await (await fetch('/api/places')).json();
+      const transport = await (await fetch('/api/transport')).json();
+      const opts = places.map((p) => '<option value="' + p.place_id + '">' + esc(p.name) + '</option>').join('');
+      $('fromSel').innerHTML = '<option value="">From...</option>' + opts;
+      $('toSel').innerHTML = '<option value="">To...</option>' + opts;
+      $('transportSel').innerHTML = transport.map((t) => '<option value="' + t.transport_id + '">' + esc(t.name) + '</option>').join('');
+    }
+
+    $('estimateBtn').onclick = async () => {
+      const from = $('fromSel').value, to = $('toSel').value, t = $('transportSel').value;
+      if (!from || !to || from === to) { $('fareResult').innerHTML = '<div class="box">Pick two different places.</div>'; return; }
+      const d = await (await fetch('/api/fare-estimate?from=' + from + '&to=' + to + '&transport=' + t)).json();
+      $('fareResult').innerHTML = '<div class="box">Distance: about ' + d.distance_km + ' km<br>' +
+        'Estimated fare: <b>Rs ' + d.formula_fare + '</b><br>' +
+        (d.reported_avg ? 'Average paid by travelers: <b>Rs ' + d.reported_avg + '</b> (' + d.reports + ' reports)' : 'No traveler reports yet for this route.') + '</div>';
+    };
+
+    $('reportBtn').onclick = async () => {
+      const from = $('fromSel').value, to = $('toSel').value, t = $('transportSel').value, amt = Number($('paidAmount').value);
+      if (!from || !to || from === to || !(amt > 0)) { $('reportMsg').textContent = 'Select both places and enter the amount.'; return; }
+      await fetch('/api/fares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_place_id: Number(from), to_place_id: Number(to), transport_id: Number(t), amount_paid: amt }),
+      });
+      $('reportMsg').textContent = 'Thanks! Fare report saved.';
+      $('paidAmount').value = '';
+    };
+
+    $('typeFilter').onchange = loadPlaces;
+    loadPlaces();
+    setupFareForm();
+  </script>
+</body>
+</html>
