@@ -1,2 +1,3 @@
 node_modules
 wanderlocal.db
+.env
